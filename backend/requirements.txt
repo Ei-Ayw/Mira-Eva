@@ -1,0 +1,14 @@
+Django==5.0.2
+channels==4.0.0
+channels-redis==4.1.0
+Pillow==10.4.0
+python-dotenv==1.0.0
+# psycopg2-binary 移除（使用SQLite，无需PostgreSQL驱动）
+redis==5.0.1
+celery==5.3.4
+djangorestframework==3.14.0
+django-cors-headers==4.3.1
+djangorestframework-simplejwt==5.5.1
+requests==2.32.5
+# 腾讯云 SDK（DeepSeek 接入）
+tencentcloud-sdk-python>=3.0.1000

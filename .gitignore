@@ -1,0 +1,57 @@
+.DS_Store
+Thumbs.db
+
+# Python/Django
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+ENV/
+.env
+.env.*
+.env.local
+
+# Django artifacts
+backend/db.sqlite3
+backend/media/
+backend/static/
+backend/logs/
+*/migrations/__pycache__/
+
+# Node/Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# Package managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests/Coverage
+.coverage
+coverage/
+pytest_cache/
+
+# Misc
+*.log
+*.tmp
+*.bak
+*.zip
+*.tar
+*.tar.gz
+
+
