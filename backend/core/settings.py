@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'user_profile',
     'user_settings',
     'memory_system',
+    'document_processor',
 ]
 
 # 中间件
@@ -294,6 +295,11 @@ LOGGING = {
         'websocket': {
             'handlers': ['console', 'chat_file'],
             'level': 'DEBUG',
+            'propagate': False,
+        },
+        'document_processor': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
             'propagate': False,
         },
     },

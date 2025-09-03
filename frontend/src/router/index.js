@@ -4,6 +4,7 @@ import Chat from '@/pages/Chat.vue'
 import Profile from '@/pages/Profile.vue'
 import Settings from '@/pages/Settings.vue'
 import Demo from '@/pages/Demo.vue'
+import DocumentUpload from '@/pages/DocumentUpload.vue'
 import Login from '@/pages/Login.vue'
 
 const routes = [
@@ -40,6 +41,12 @@ const routes = [
     name: 'Demo',
     component: Demo,
     meta: { requiresAuth: false }
+  },
+  {
+    path: '/documents',
+    name: 'DocumentUpload',
+    component: DocumentUpload,
+    meta: { requiresAuth: true }
   }
 ]
 

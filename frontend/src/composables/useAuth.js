@@ -91,16 +91,20 @@ export function useAuth() {
   }
   
   // 获取认证头
-  const getAuthHeaders = () => {
+  const getAuthHeaders = (contentType = null) => {
+    const headers = {}
+    
     if (authToken.value) {
-      return {
-        'Authorization': `Bearer ${authToken.value}`,
-        'Content-Type': 'application/json'
-      }
+      headers['Authorization'] = `Bearer ${authToken.value}`
     }
-    return {
-      'Content-Type': 'application/json'
+    
+    // 只有在明确指定时才设置 Content-Type
+    // 对于文件上传，让浏览器自动设置 multipart/form-data
+    if (contentType) {
+      headers['Content-Type'] = contentType
     }
+    
+    return headers
   }
   
   // 刷新token

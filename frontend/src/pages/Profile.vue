@@ -14,6 +14,9 @@
         <span class="back-icon">←</span>
       </button>
       <h1 class="page-title">Profile & Memories</h1>
+      <button class="documents-btn" @click="goToDocuments">
+        <FileTextOutlined class="documents-icon" />
+      </button>
     </div>
 
     <!-- 个人资料卡片 -->
@@ -98,6 +101,7 @@
 
 <script>
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { profileAPI } from '@/services/api'
 import {
   LeftOutlined,
@@ -107,7 +111,8 @@ import {
   CalendarOutlined,
   StarOutlined,
   AimOutlined,
-  MessageOutlined
+  MessageOutlined,
+  FileTextOutlined
 } from '@ant-design/icons-vue'
 
 export default {
@@ -120,9 +125,11 @@ export default {
     CalendarOutlined,
     StarOutlined,
     AimOutlined,
-    MessageOutlined
+    MessageOutlined,
+    FileTextOutlined
   },
   setup() {
+    const router = useRouter()
     const isLoading = ref(false)
     const error = ref('')
 
@@ -148,6 +155,10 @@ export default {
       window.history.back()
     }
 
+    const goToDocuments = () => {
+      router.push('/documents')
+    }
+
     const loadProfileData = async () => {
       try {
         isLoading.value = true
@@ -170,7 +181,7 @@ export default {
 
     onMounted(loadProfileData)
 
-    return { isLoading, error, summary, memoryCountsList, displayName, goBack }
+    return { isLoading, error, summary, memoryCountsList, displayName, goBack, goToDocuments }
   }
 }
 </script>
@@ -242,6 +253,30 @@ export default {
   font-size: 24px;
   font-weight: 700;
   color: #000000;
+  flex: 1;
+}
+
+.documents-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: #007AFF;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 16px;
+  transition: all 0.3s ease;
+}
+
+.documents-btn:hover {
+  background-color: #0056CC;
+  transform: translateY(-2px);
+}
+
+.documents-icon {
+  font-size: 18px;
+  color: #FFFFFF;
 }
 
 /* 个人资料卡片 */

@@ -28,21 +28,21 @@ urlpatterns = [
     path('api/profile/', include('user_profile.urls')),
     path('api/settings/', include('user_settings.urls')),
     path('api/ai/', include('ai_engine.urls')),
+    path('api/', include('document_processor.urls')),
     
     # 根端点
-    path('', lambda request: {
+    path('', lambda request: JsonResponse({
         'message': '欢迎使用 Mira-Eva AI聊天系统！',
         'status': 'running',
         'version': '1.0.0',
         'endpoints': {
             'chat': '/api/chat/',
             'profile': '/api/profile/',
-            'settings': '/api/settings/',
-            'ai': '/api/ai/',
+            'api': '/api/',
             'websocket': '/ws/chat/{session_id}/',
             'auth': '/api/token/',
         }
-    }),
+    })),
 ]
 
 # 开发环境下的媒体文件服务

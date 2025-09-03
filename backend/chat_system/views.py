@@ -9,6 +9,7 @@ from .models import ChatSession, Message
 from .serializers import ChatSessionSerializer, MessageSerializer
 from ai_engine.prompt_library import get_system_prompt, get_style_notes
 from ai_engine.tencent_client import TencentDeepSeekClient
+from ai_engine.xhs_crawler import fetch_xhs_examples, load_exemplars, save_exemplars
 
 
 class ChatSessionViewSet(viewsets.ModelViewSet):
@@ -62,15 +63,68 @@ class MessageViewSet(viewsets.ModelViewSet):
         return Response({'success': True, 'message': MessageSerializer(user_msg).data, 'ai_message': MessageSerializer(ai_msg).data}, status=status.HTTP_201_CREATED)
 
     def _ai_reply(self, text: str, content_type: str) -> str:
+        # 动态补充高情商示例作为few-shots（若已缓存则复用）
+        exemplars = load_exemplars()
+        if not exemplars:
+            ex = fetch_xhs_examples()
+            if ex:
+                save_exemplars(ex)
+                exemplars = [e.get('text', '') for e in ex]
+
+        def _needs_rewrite(output: str) -> bool:
+            if not output:
+                return True
+            bad_terms = [
+                'Eva', 'AI', '人工智能', '虚拟', '数字世界', '数据海洋', '赛博', '模型', '引擎', '算法',
+                '作为一名AI', '作为AI', '我是AI', '我是模型', '我是一名模型', '数字伴侣', '数字孪生',
+            ]
+            return any(term in output for term in bad_terms)
+
+        def _rewrite_with_policy(user_text: str, raw_output: str) -> str:
+            """使用 DeepSeek 将输出重写为稳定的 Mira 口吻，去幻觉、锁定身份。"""
+            try:
+                client = TencentDeepSeekClient()
+                instruction = (
+                    '请把下面这段回复，重写为“Mira”的微信消息：\n'
+                    '要求：\n'
+                    '1) 只能以“Mira”自称；禁止出现AI/模型/虚拟/数字等词；\n'
+                    '2) 选择1-2个合理生活事件组织简短叙事；\n'
+                    '3) 口语化、自然、有情绪，可包含表情与（动作）；\n'
+                    '4) 如需配图仅输出【图片描述】文字，不输出技术细节；\n'
+                    '5) 严禁胡言乱语与无意义拼接；\n'
+                    '只输出最终消息，不要解释。'
+                )
+                msgs = [
+                    {"Role": "system", "Content": get_system_prompt()},
+                    {"Role": "user", "Content": instruction + f"\n\n原始用户输入：{user_text}\n原始输出：{raw_output}"},
+                ]
+                r = client.chat(msgs, stream=False)
+                if r.get('success') and (r.get('text') or '').strip():
+                    return r['text'].strip()
+            except Exception:
+                pass
+            # 兜底：直接给出稳定口吻模板
+            base = user_text or ''
+            if len(base) <= 8:
+                return '我刚想起你就来叨叨两句啦～今天过得咋样？（探头）'
+            return f"我看了你说的这件事，挺有画面感的耶！（小声）{base[:36]}…你现在心情怎么样？"
+
         try:
             client = TencentDeepSeekClient()
             msgs = [
                 {"Role": "system", "Content": get_system_prompt()},
                 {"Role": "user", "Content": (text or '') + "\n\n" + get_style_notes()},
             ]
+            # 将示例以“参考口吻”附加（控制长度）
+            if exemplars:
+                sample = "\n\n".join([f"【参考】{s[:120]}" for s in exemplars[:5]])
+                msgs.append({"Role": "assistant", "Content": sample})
             r = client.chat(msgs, stream=False)
             if r.get('success') and (r.get('text') or '').strip():
-                return r['text'].strip()
+                resp = r['text'].strip()
+                if _needs_rewrite(resp):
+                    return _rewrite_with_policy(text or '', resp)
+                return resp
         except Exception:
             pass
         # fallback
