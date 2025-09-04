@@ -14,6 +14,11 @@ from ai_engine.xhs_crawler import fetch_xhs_examples, load_exemplars, save_exemp
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
+import threading
+import time
+import random
+import re
+from datetime import timedelta
 
 
 class ChatSessionViewSet(viewsets.ModelViewSet):
@@ -82,6 +87,35 @@ class MessageViewSet(viewsets.ModelViewSet):
             metadata={'client_msg_id': client_msg_id} if client_msg_id else {}
         )
         session.save()
+
+        # 去抖动聚合：用户可能连续发送多句，等待片刻后统一生成回复
+        now_ts = timezone.now().timestamp()
+        cache.set(f"last_user_message_at:{user.id}", now_ts, timeout=3600)
+        cache.set(f"last_user_message_at_session:{session.id}", now_ts, timeout=3600)
+        # 用户发言，清除“等待用户回应”标志，允许AI继续本回合
+        cache.delete(f"await_user_reply:{session.id}")
+        pending_key = f"debounce_pending:{session.id}"
+        if cache.get(pending_key):
+            resp_body = {
+                'success': True,
+                'message': MessageSerializer(user_msg).data,
+                'ai_message': None,
+                'ai_messages': []
+            }
+            return Response(resp_body, status=status.HTTP_201_CREATED)
+        # 标记去抖动中并启动后台聚合生成
+        cache.set(pending_key, 1, timeout=6)
+        try:
+            self._schedule_debounced_reply(session.id, user.id)
+        except Exception:
+            pass
+        resp_body = {
+            'success': True,
+            'message': MessageSerializer(user_msg).data,
+            'ai_message': None,
+            'ai_messages': []
+        }
+        return Response(resp_body, status=status.HTTP_201_CREATED)
 
         # 会话状态锁：同一用户/会话同时仅允许一个AI生成任务
         lock_key = f"lock:session:{session.id}"
@@ -362,5 +396,172 @@ class MessageViewSet(viewsets.ModelViewSet):
             return s
         except Exception:
             return text
+
+    # -------------------- 去抖动与多句随机发送、形象照支持 --------------------
+    def _schedule_debounced_reply(self, session_id: int, user_id: int, debounce_s: float = 1.2, max_wait_s: float = 5.0):
+        try:
+            threading.Thread(target=self._debounced_reply_worker, args=(session_id, user_id, debounce_s, max_wait_s), daemon=True).start()
+        except Exception:
+            pass
+
+    def _debounced_reply_worker(self, session_id: int, user_id: int, debounce_s: float, max_wait_s: float):
+        pending_key = f"debounce_pending:{session_id}"
+        lock_key = f"debounce_lock:{session_id}"
+        if not cache.add(lock_key, '1', timeout=int(max_wait_s) + 2):
+            cache.delete(pending_key)
+            return
+        start = time.time()
+        try:
+            last_ts_key = f"last_user_message_at_session:{session_id}"
+            last_ts = cache.get(last_ts_key)
+            while True:
+                time.sleep(debounce_s)
+                new_ts = cache.get(last_ts_key)
+                if new_ts == last_ts:
+                    break
+                last_ts = new_ts
+                if time.time() - start > max_wait_s:
+                    break
+
+            # 获取会话与用户
+            try:
+                session = ChatSession.objects.get(id=session_id)
+                user = session.user
+            except ChatSession.DoesNotExist:
+                cache.delete(pending_key)
+                return
+
+            # 会话生成锁，防止并发
+            gen_lock = f"lock:session:{session_id}"
+            if not cache.add(gen_lock, '1', timeout=15):
+                cache.delete(pending_key)
+                return
+            try:
+                # 聚合最近消息（近20秒内用户消息，最多5条）
+                since = timezone.now() - timedelta(seconds=20)
+                recent_user_msgs = Message.objects.filter(session_id=session_id, sender='user', timestamp__gte=since).order_by('timestamp')[:5]
+                combined_text = "\n".join([m.content for m in recent_user_msgs]) or ""
+                if not combined_text:
+                    last_user_msg = Message.objects.filter(session_id=session_id, sender='user').order_by('-timestamp').first()
+                    combined_text = last_user_msg.content if last_user_msg else ''
+
+                # 生成候选句子
+                chunks = self._ai_reply_chunks(combined_text, 'text') or ["我在呢，继续跟我说说～"]
+                # 低能量概率 10%
+                try:
+                    if random.random() < 0.10:
+                        low_energy_pool = [
+                            "嗯嗯我在～",
+                            "哈哈，真是～",
+                            "懂了，我听着呢。",
+                            "行，我知道啦～",
+                            "先记下了，继续说～",
+                        ]
+                        chunks = [random.choice(low_energy_pool)]
+                except Exception:
+                    pass
+
+                # 检测截断，修补首句
+                if chunks:
+                    chunks[0] = self._maybe_continue_if_cutoff(chunks[0], combined_text)
+
+                # 随机发送 2~5 句（若不足则以现有为准；低能量时只发1句）
+                if len(chunks) > 1:
+                    n = random.randint(2, min(5, len(chunks)))
+                    send_chunks = chunks[:n]
+                else:
+                    send_chunks = chunks
+
+                channel_layer = get_channel_layer()
+                # 打字中开始
+                async_to_sync(channel_layer.group_send)(f"chat_{session_id}", { 'type': 'typing_status', 'is_typing': True, 'sender': 'ai' })
+
+                for text_part in send_chunks:
+                    # 模拟人类节奏：长度相关的短暂停顿
+                    try:
+                        pause = min(1.2, 0.15 + len(text_part) / 40.0)
+                        time.sleep(pause)
+                    except Exception:
+                        pass
+
+                    ai_msg = Message.objects.create(session_id=session_id, content=text_part, content_type='text', sender='ai')
+                    payload = {
+                        'type': 'chat.message',
+                        'message': {
+                            'id': ai_msg.id,
+                            'content': text_part,
+                            'sender': 'ai',
+                            'content_type': 'text',
+                            'timestamp': ai_msg.timestamp.isoformat()
+                        }
+                    }
+                    async_to_sync(channel_layer.group_send)(f"chat_{session_id}", payload)
+
+                    now_ts2 = timezone.now().timestamp()
+                    cache.set(f"last_ai_message_at:{user_id}", now_ts2, timeout=3600)
+                    cache.set(f"last_ai_message_at_session:{session_id}", now_ts2, timeout=3600)
+
+                # 形象照：若命中触发词且未命中频控，则随机发送一张生活照
+                try:
+                    if self._should_send_profile_photo(session_id, combined_text):
+                        photo_url = self._random_mira_photo()
+                        if photo_url:
+                            ai_img = Message.objects.create(session_id=session_id, content=photo_url, content_type='image', sender='ai')
+                            async_to_sync(channel_layer.group_send)(
+                                f"chat_{session_id}",
+                                {
+                                    'type': 'chat.message',
+                                    'message': {
+                                        'id': ai_img.id,
+                                        'content': photo_url,
+                                        'sender': 'ai',
+                                        'content_type': 'image',
+                                        'timestamp': ai_img.timestamp.isoformat(),
+                                        'text': '给你看看我最近的一张生活照，好看吗宝宝？',
+                                    }
+                                }
+                            )
+                except Exception:
+                    pass
+
+                # 打字中结束 + 设置等待用户回应（回合制）
+                async_to_sync(channel_layer.group_send)(f"chat_{session_id}", { 'type': 'typing_status', 'is_typing': False, 'sender': 'ai' })
+                cache.set(f"await_user_reply:{session_id}", 1, timeout=600)
+            finally:
+                cache.delete(gen_lock)
+        finally:
+            cache.delete(lock_key)
+            cache.delete(pending_key)
+
+    def _should_send_profile_photo(self, session_id: int, combined_text: str) -> bool:
+        # 触发关键词 + 2分钟频控
+        key = f"mira_photo_sent:{session_id}"
+        if cache.get(key):
+            return False
+        text = (combined_text or '')
+        patterns = [
+            r"看看你", r"你长什么样", r"发.*(照片|自拍)", r"生活照", r"想你", r"想看看", r"头像",
+        ]
+        try:
+            for p in patterns:
+                if re.search(p, text):
+                    cache.set(key, 1, timeout=120)
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _random_mira_photo(self) -> str:
+        photos = [
+            'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop',
+            'https://images.unsplash.com/photo-1521575107034-e0fa0b594529?q=80&w=800&auto=format&fit=crop',
+            'https://images.unsplash.com/photo-1494790108377-be9c29b29330?q=80&w=800&auto=format&fit=crop',
+            'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=800&auto=format&fit=crop',
+            'https://images.unsplash.com/photo-1531123897727-8f129e1688ce?q=80&w=800&auto=format&fit=crop',
+        ]
+        try:
+            return random.choice(photos)
+        except Exception:
+            return ''
 
 
