@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { Modal } from 'ant-design-vue'
 import router from '@/router'
+import { Modal } from 'ant-design-vue'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({

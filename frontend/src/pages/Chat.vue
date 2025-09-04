@@ -520,6 +520,7 @@ export default {
       toggleVoiceInput,
       showImagePicker,
       previewImage,
+      previewVisible,
       handlePreviewCancel,
       autoResize,
       formatTime,
