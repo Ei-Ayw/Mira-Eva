@@ -485,13 +485,16 @@ class MessageViewSet(viewsets.ModelViewSet):
                     combined_text = last_user_msg.content if last_user_msg else ''
 
                 # 生成候选句子
+                logger.info(f"开始调用AI生成回复，用户输入: {combined_text}")
                 chunks = self._ai_reply_chunks(combined_text, 'text') or ["嗯嗯我在"]
-                # 微信聊天低能量概率：短输入更高，模拟真人简短回应
+                logger.info(f"AI回复生成完成，chunks数量: {len(chunks)}")
+                # 微信聊天低能量概率：适度降低，确保AI正常调用
                 try:
                     txt = (combined_text or '').strip()
                     is_short = len(txt) <= 8 and ('?' not in txt) and ('？' not in txt) and ('吗' not in txt)
-                    prob = 0.7 if is_short else 0.15
+                    prob = 0.2 if is_short else 0.05  # 大幅降低概率，让AI更多参与
                     if random.random() < prob:
+                        logger.info(f"使用低能量回复，概率: {prob}, 输入: {txt}")
                         low_energy_pool = [
                             "哈哈哈好的",
                             "确实诶",
