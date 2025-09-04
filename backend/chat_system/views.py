@@ -141,11 +141,12 @@ class MessageViewSet(viewsets.ModelViewSet):
                 import random
                 if random.random() < 0.10:
                     low_energy_pool = [
-                        "嗯嗯我在～",
-                        "哈哈，真是～",
-                        "懂了，我听着呢。",
-                        "行，我知道啦～",
-                        "先记下了，继续说～",
+                        "嗯嗯我在听～",
+                        "哈哈确实诶",
+                        "有道理",
+                        "好的好的",
+                        "明白了～",
+                        "是这样啊",
                     ]
                     chunks = [random.choice(low_energy_pool)]
             except Exception:
@@ -290,15 +291,19 @@ class MessageViewSet(viewsets.ModelViewSet):
         try:
             client = TencentDeepSeekClient()
             instruction = (
-                '你是Mira，用微信聊天的方式回复朋友，要求：'
-                '1) 每句话10-20字，像打字聊天一样碎片化；'
-                '2) 先回应对方，再分享自己的小事；'
-                '3) 输出2-4句话的JSON格式：{"sentences": ["句1","句2",...]}；'
-                '4) 轻松随意，像朋友间聊天。'
+                '你是Mira，音乐学院大三学生，用微信聊天方式回复朋友：'
+                '1) 仔细理解对方刚说的话，基于具体内容回应，不能答非所问；'
+                '2) 如果对方问问题，要正面回答，不能用"我也是"等万能回复敷衍；'
+                '3) 结合音乐学院生活背景（合唱团、钢琴练习等）给出有信息量的回复；'
+                '4) 每句10-20字，输出2-4句JSON格式：{"sentences": ["句1","句2",...]}；'
+                '5) 避免重复使用相同的回复模式。'
             )
+            # 获取最近的对话历史，提供上下文
+            recent_context = self._get_recent_conversation_context(text)
+            
             msgs = [
                 {"Role": "system", "Content": get_system_prompt()},
-                {"Role": "user", "Content": instruction + "\n\n用户消息：" + (text or '') + "\n\n" + get_style_notes()},
+                {"Role": "user", "Content": instruction + "\n\n" + recent_context + "\n\n当前用户消息：" + (text or '') + "\n\n" + get_style_notes()},
             ]
             if exemplars:
                 sample = "\n\n".join([f"【参考】{s[:120]}" for s in exemplars[:3]])
@@ -464,13 +469,13 @@ class MessageViewSet(viewsets.ModelViewSet):
                     prob = 0.7 if is_short else 0.15
                     if random.random() < prob:
                         low_energy_pool = [
-                            "哈哈哈",
-                            "真的吗",
-                            "我也是",
-                            "嗯嗯",
-                            "收到～",
-                            "好的呀",
-                            "哈哈懂了",
+                            "哈哈哈好的",
+                            "确实诶",
+                            "嗯嗯在听",
+                            "收到收到",
+                            "好哒～",
+                            "了解了",
+                            "明白明白",
                         ]
                         chunks = [random.choice(low_energy_pool)]
                 except Exception:
@@ -657,5 +662,33 @@ class MessageViewSet(viewsets.ModelViewSet):
         
         # 默认返回街景
         return scene_photos.get('街景', '')
+    
+    def _get_recent_conversation_context(self, current_text: str) -> str:
+        """获取最近对话上下文，帮助AI理解话题连续性"""
+        try:
+            # 从请求数据中获取session_id
+            session_id = self.request.data.get('session_id')
+            if not session_id:
+                return "对话上下文：新对话开始"
+            
+            # 获取最近5条消息作为上下文
+            from .models import Message
+            recent_messages = Message.objects.filter(
+                session_id=session_id
+            ).order_by('-timestamp')[:5]
+            
+            if not recent_messages:
+                return "对话上下文：新对话开始"
+            
+            context_lines = []
+            for msg in reversed(recent_messages):  # 时间正序
+                sender_name = "用户" if msg.sender == 'user' else "Mira"
+                content = msg.content[:50] + ("..." if len(msg.content) > 50 else "")
+                context_lines.append(f"{sender_name}: {content}")
+            
+            return "最近对话上下文：\n" + "\n".join(context_lines) + "\n\n分析要点：仔细理解对话主题和用户的问题意图，给出有针对性的回复。"
+            
+        except Exception as e:
+            return "对话上下文：获取失败，请基于当前消息回复"
 
 
