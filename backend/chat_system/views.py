@@ -169,7 +169,7 @@ class MessageViewSet(viewsets.ModelViewSet):
             cache.set(f"last_user_message_at:{user.id}", timezone.now().timestamp(), timeout=3600)
 
             # 让 LLM 生成单条回复，避免刷屏（加入低能量概率）
-            chunks = self._ai_reply_chunks(content, content_type)
+        chunks = self._ai_reply_chunks(content, content_type)
             # 10% 概率采用低能量短回应，降低压迫感
             try:
                 import random
@@ -228,28 +228,28 @@ class MessageViewSet(viewsets.ModelViewSet):
             # 仅保留首条文本作为即时广播
             chunks = [text_reply]
 
-            channel_layer = get_channel_layer()
+        channel_layer = get_channel_layer()
             # 推送 AI 正在输入（前端显示打字中）
             async_to_sync(channel_layer.group_send)(
                 f"chat_{session.id}",
                 { 'type': 'typing_status', 'is_typing': True, 'sender': 'ai' }
             )
-            ai_msgs = []
-            for text_part in chunks:
-                ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
-                ai_msgs.append(ai_msg)
-                payload = {
-                    'type': 'chat.message',
-                    'message': {
+        ai_msgs = []
+        for text_part in chunks:
+            ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
+            ai_msgs.append(ai_msg)
+            payload = {
+                'type': 'chat.message',
+                'message': {
                         'id': ai_msg.id,
-                        'content': text_part,
-                        'sender': 'ai',
-                        'content_type': 'text',
-                        'timestamp': ai_msg.timestamp.isoformat()
-                    }
+                    'content': text_part,
+                    'sender': 'ai',
+                    'content_type': 'text',
+                    'timestamp': ai_msg.timestamp.isoformat()
                 }
+            }
                 # 仅推送到会话组，避免重复（同一连接通常同时在用户组与会话组）
-                async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
+            async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
                 # 记录AI消息时间
                 now_ts = timezone.now().timestamp()
                 cache.set(f"last_ai_message_at:{user.id}", now_ts, timeout=3600)
@@ -264,13 +264,13 @@ class MessageViewSet(viewsets.ModelViewSet):
             # 标记需要用户先回应（强制回合制）
             cache.set(f"await_user_reply:{session.id}", 1, timeout=600)
 
-            resp_body = {
-                'success': True,
-                'message': MessageSerializer(user_msg).data,
-                'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
-                'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
-            }
-            return Response(resp_body, status=status.HTTP_201_CREATED)
+        resp_body = {
+            'success': True,
+            'message': MessageSerializer(user_msg).data,
+            'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
+            'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
+        }
+        return Response(resp_body, status=status.HTTP_201_CREATED)
         finally:
             # 确保释放锁
             cache.delete(lock_key)
@@ -344,7 +344,13 @@ class MessageViewSet(viewsets.ModelViewSet):
                 msgs.append({"Role": "assistant", "Content": sample})
             
             # 记录发送给AI的完整提示词
-            prompt_logger.info(f"AI提示词 | 用户输入: {text} | 完整消息: {json.dumps(msgs, ensure_ascii=False, indent=2)}")
+            try:
+                import json as json_module
+                msgs_json = json_module.dumps(msgs, ensure_ascii=False, indent=2)
+                prompt_logger.info(f"AI提示词 | 用户输入: {text} | 完整消息: {msgs_json}")
+            except Exception as e:
+                logger.error(f"AI提示词记录失败: {e}")
+                prompt_logger.info(f"AI提示词 | 用户输入: {text} | 消息数量: {len(msgs)}")
             
             r = client.chat(msgs, stream=False)
             
