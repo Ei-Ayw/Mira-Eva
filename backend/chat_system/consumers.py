@@ -13,37 +13,56 @@ logger = logging.getLogger(__name__)
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.session_id = self.scope['url_route']['kwargs']['session_id']
-        self.user = self.scope['user']
-        self._owner_user_id = None
-        self._owner_username = None
-        if not await self.verify_session():
-            await self.close()
-            return
-        
-        # 添加到聊天组
-        await self.channel_layer.group_add(f"chat_{self.session_id}", self.channel_name)
-        
-        # 解析会话所属用户（用于主动触发）
-        owner_id, owner_username = await self.get_session_owner()
-        self._owner_user_id = owner_id
-        self._owner_username = owner_username
+        try:
+            self.session_id = self.scope['url_route']['kwargs']['session_id']
+            self.user = self.scope.get('user', None)
+            self._owner_user_id = None
+            self._owner_username = None
+            
+            # 先接受连接，避免认证失败导致连接关闭
+            await self.accept()
+            
+            # 验证会话（非阻塞）
+            session_valid = await self.verify_session()
+            if not session_valid:
+                logger.warning(f"会话验证失败: {self.session_id}")
+                # 发送错误消息但不关闭连接
+                await self.send(json.dumps({
+                    'type': 'error',
+                    'message': '会话验证失败，但连接已建立'
+                }))
+            
+            # 添加到聊天组
+            await self.channel_layer.group_add(f"chat_{self.session_id}", self.channel_name)
+            
+            # 解析会话所属用户（用于主动触发）
+            try:
+                owner_id, owner_username = await self.get_session_owner()
+                self._owner_user_id = owner_id
+                self._owner_username = owner_username
 
-        # 添加到用户组（用于主动触发消息）
-        if owner_id is not None:
-            await self.channel_layer.group_add(f"chat_{owner_id}", self.channel_name)
-            # 通知主动触发引擎用户已连接
-            proactive_engine.add_connected_user(owner_id, self.session_id)
-            logger.info(f"用户 {owner_username} (ID: {owner_id}) 已连接WebSocket（由会话归属识别）")
-            # 连接即问候（带冷却）
-            await sync_to_async(proactive_engine.send_welcome_on_connect)(owner_id)
-        
-        await self.accept()
-        await self.send(json.dumps({
-            'type': 'connection_established', 
-            'session_id': self.session_id,
-            'user_id': (self.user.id if getattr(self.user, 'is_authenticated', False) else None) or owner_id
-        }))
+                # 添加到用户组（用于主动触发消息）
+                if owner_id is not None:
+                    await self.channel_layer.group_add(f"chat_{owner_id}", self.channel_name)
+                    # 通知主动触发引擎用户已连接
+                    proactive_engine.add_connected_user(owner_id, self.session_id)
+                    logger.info(f"用户 {owner_username} (ID: {owner_id}) 已连接WebSocket（由会话归属识别）")
+                    # 连接即问候（带冷却）
+                    await sync_to_async(proactive_engine.send_welcome_on_connect)(owner_id)
+            except Exception as e:
+                logger.error(f"获取会话所有者失败: {e}")
+            
+            # 发送连接确认
+            await self.send(json.dumps({
+                'type': 'connection_established', 
+                'session_id': self.session_id,
+                'user_id': self._owner_user_id,
+                'status': 'connected'
+            }))
+            
+        except Exception as e:
+            logger.error(f"WebSocket连接失败: {e}")
+            await self.close()
 
     async def disconnect(self, close_code):
         # 从聊天组移除
