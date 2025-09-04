@@ -260,6 +260,10 @@ LOGGING = {
             'format': '[{asctime}] {levelname} - {message}',
             'style': '{',
         },
+        'ai_conversation': {
+            'format': '[{asctime}] {levelname} | {name} | {message}',
+            'style': '{',
+        },
     },
     'handlers': {
         'console': {
@@ -281,6 +285,24 @@ LOGGING = {
             'filename': 'logs/error.log',
             'formatter': 'verbose',
             'level': 'ERROR',
+        },
+        'ai_conversation_file': {
+            'class': 'logging.FileHandler',
+            'filename': 'logs/ai_conversation.log',
+            'formatter': 'ai_conversation',
+            'encoding': 'utf-8',
+        },
+        'user_messages_file': {
+            'class': 'logging.FileHandler',
+            'filename': 'logs/user_messages.log',
+            'formatter': 'ai_conversation',
+            'encoding': 'utf-8',
+        },
+        'ai_prompts_file': {
+            'class': 'logging.FileHandler',
+            'filename': 'logs/ai_prompts.log',
+            'formatter': 'ai_conversation',
+            'encoding': 'utf-8',
         },
     },
     'loggers': {
@@ -311,6 +333,21 @@ LOGGING = {
         },
         'document_processor': {
             'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'ai_conversation': {
+            'handlers': ['ai_conversation_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'user_messages': {
+            'handlers': ['user_messages_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'ai_prompts': {
+            'handlers': ['ai_prompts_file'],
             'level': 'INFO',
             'propagate': False,
         },

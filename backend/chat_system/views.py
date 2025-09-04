@@ -1,4 +1,6 @@
 import uuid
+import logging
+import json
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -20,6 +22,12 @@ import time
 import random
 import re
 from datetime import timedelta
+
+# 专门的日志记录器
+logger = logging.getLogger(__name__)
+user_logger = logging.getLogger('user_messages')
+ai_logger = logging.getLogger('ai_conversation') 
+prompt_logger = logging.getLogger('ai_prompts')
 
 
 class ChatSessionViewSet(viewsets.ModelViewSet):
@@ -80,6 +88,9 @@ class MessageViewSet(viewsets.ModelViewSet):
                     'ai_messages': []
                 }, status=status.HTTP_200_OK)
 
+        # 记录用户消息到日志
+        user_logger.info(f"用户消息 | 会话ID: {session_id} | 用户ID: {user.id} | 内容类型: {content_type} | 内容: {content}")
+        
         user_msg = Message.objects.create(
             session=session,
             content=content,
@@ -135,7 +146,7 @@ class MessageViewSet(viewsets.ModelViewSet):
             cache.set(f"last_user_message_at:{user.id}", timezone.now().timestamp(), timeout=3600)
 
             # 让 LLM 生成单条回复，避免刷屏（加入低能量概率）
-            chunks = self._ai_reply_chunks(content, content_type)
+        chunks = self._ai_reply_chunks(content, content_type)
             # 10% 概率采用低能量短回应，降低压迫感
             try:
                 import random
@@ -194,28 +205,28 @@ class MessageViewSet(viewsets.ModelViewSet):
             # 仅保留首条文本作为即时广播
             chunks = [text_reply]
 
-            channel_layer = get_channel_layer()
+        channel_layer = get_channel_layer()
             # 推送 AI 正在输入（前端显示打字中）
             async_to_sync(channel_layer.group_send)(
                 f"chat_{session.id}",
                 { 'type': 'typing_status', 'is_typing': True, 'sender': 'ai' }
             )
-            ai_msgs = []
-            for text_part in chunks:
-                ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
-                ai_msgs.append(ai_msg)
-                payload = {
-                    'type': 'chat.message',
-                    'message': {
+        ai_msgs = []
+        for text_part in chunks:
+            ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
+            ai_msgs.append(ai_msg)
+            payload = {
+                'type': 'chat.message',
+                'message': {
                         'id': ai_msg.id,
-                        'content': text_part,
-                        'sender': 'ai',
-                        'content_type': 'text',
-                        'timestamp': ai_msg.timestamp.isoformat()
-                    }
+                    'content': text_part,
+                    'sender': 'ai',
+                    'content_type': 'text',
+                    'timestamp': ai_msg.timestamp.isoformat()
                 }
+            }
                 # 仅推送到会话组，避免重复（同一连接通常同时在用户组与会话组）
-                async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
+            async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
                 # 记录AI消息时间
                 now_ts = timezone.now().timestamp()
                 cache.set(f"last_ai_message_at:{user.id}", now_ts, timeout=3600)
@@ -230,13 +241,13 @@ class MessageViewSet(viewsets.ModelViewSet):
             # 标记需要用户先回应（强制回合制）
             cache.set(f"await_user_reply:{session.id}", 1, timeout=600)
 
-            resp_body = {
-                'success': True,
-                'message': MessageSerializer(user_msg).data,
-                'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
-                'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
-            }
-            return Response(resp_body, status=status.HTTP_201_CREATED)
+        resp_body = {
+            'success': True,
+            'message': MessageSerializer(user_msg).data,
+            'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
+            'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
+        }
+        return Response(resp_body, status=status.HTTP_201_CREATED)
         finally:
             # 确保释放锁
             cache.delete(lock_key)
@@ -308,7 +319,15 @@ class MessageViewSet(viewsets.ModelViewSet):
             if exemplars:
                 sample = "\n\n".join([f"【参考】{s[:120]}" for s in exemplars[:3]])
                 msgs.append({"Role": "assistant", "Content": sample})
+            
+            # 记录发送给AI的完整提示词
+            prompt_logger.info(f"AI提示词 | 用户输入: {text} | 完整消息: {json.dumps(msgs, ensure_ascii=False, indent=2)}")
+            
             r = client.chat(msgs, stream=False)
+            
+            # 记录AI的原始响应
+            ai_logger.info(f"AI原始响应 | 用户输入: {text} | 成功: {r.get('success')} | 响应: {r.get('text', '无响应')}")
+            
             if r.get('success') and (r.get('text') or '').strip():
                 raw = r['text'].strip()
                 import json
@@ -317,12 +336,17 @@ class MessageViewSet(viewsets.ModelViewSet):
                     arr = data.get('sentences') if isinstance(data, dict) else None
                     chunks = [s.strip() for s in (arr or []) if isinstance(s, str) and s.strip()]
                     if 1 <= len(chunks) <= 4:
-                        return self._post_process_chunks_wechat(chunks)
-                except Exception:
+                        processed_chunks = self._post_process_chunks_wechat(chunks)
+                        ai_logger.info(f"AI处理后回复 | 用户输入: {text} | 最终回复: {processed_chunks}")
+                        return processed_chunks
+                except Exception as e:
+                    ai_logger.warning(f"AI响应JSON解析失败 | 用户输入: {text} | 原始响应: {raw} | 错误: {e}")
                     pass
                 # 若非JSON，回退为重写后单句拆分
                 candidate = _rewrite_with_policy(text or '', raw)
-                return self._post_process_chunks_wechat(self._split_short_sentences(candidate))
+                fallback_chunks = self._post_process_chunks_wechat(self._split_short_sentences(candidate))
+                ai_logger.info(f"AI回退处理 | 用户输入: {text} | 回退回复: {fallback_chunks}")
+                return fallback_chunks
         except Exception:
             pass
         # fallback：按用户句子生成友好回应并拆分
@@ -557,6 +581,10 @@ class MessageViewSet(viewsets.ModelViewSet):
                                 continue  # 跳过文字版本
 
                     ai_msg = Message.objects.create(session_id=session_id, content=text_part, content_type='text', sender='ai')
+                    
+                    # 记录AI发送的消息
+                    ai_logger.info(f"AI消息已发送 | 会话ID: {session_id} | 用户ID: {user_id} | 消息ID: {ai_msg.id} | 内容: {text_part}")
+                    
                     payload = {
                         'type': 'chat.message',
                         'message': {
@@ -579,6 +607,10 @@ class MessageViewSet(viewsets.ModelViewSet):
                         photo_url = self._random_mira_photo()
                         if photo_url:
                             ai_img = Message.objects.create(session_id=session_id, content=photo_url, content_type='image', sender='ai')
+                            
+                            # 记录AI发送的图片消息
+                            ai_logger.info(f"AI图片消息已发送 | 会话ID: {session_id} | 用户ID: {user_id} | 消息ID: {ai_img.id} | 图片URL: {photo_url}")
+                            
                             async_to_sync(channel_layer.group_send)(
                                 f"chat_{session_id}",
                                 {
