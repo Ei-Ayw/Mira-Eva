@@ -169,7 +169,7 @@ class MessageViewSet(viewsets.ModelViewSet):
             cache.set(f"last_user_message_at:{user.id}", timezone.now().timestamp(), timeout=3600)
 
             # 让 LLM 生成单条回复，避免刷屏（加入低能量概率）
-        chunks = self._ai_reply_chunks(content, content_type)
+            chunks = self._ai_reply_chunks(content, content_type)
             # 10% 概率采用低能量短回应，降低压迫感
             try:
                 import random
