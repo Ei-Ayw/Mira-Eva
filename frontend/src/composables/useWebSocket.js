@@ -28,7 +28,8 @@ export function useWebSocket() {
     }
 
     sessionId.value = sessionIdParam
-    const wsUrl = `ws://localhost:8000/ws/chat/${sessionIdParam}/`
+    // 使用相对路径，让Vite代理处理WebSocket连接
+    const wsUrl = `ws://localhost:3001/ws/chat/${sessionIdParam}/`
     
     try {
       isConnecting = true
