@@ -1,6 +1,12 @@
 import uuid
 import logging
 import json
+
+# 专用日志记录器
+logger = logging.getLogger(__name__)
+user_logger = logging.getLogger('user_messages')
+ai_logger = logging.getLogger('ai_conversation')
+prompt_logger = logging.getLogger('ai_prompts')
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
