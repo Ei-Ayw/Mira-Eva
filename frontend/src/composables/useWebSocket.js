@@ -4,6 +4,7 @@ export function useWebSocket() {
   const ws = ref(null)
   const isConnected = ref(false)
   const messages = ref([])
+  const typing = ref({ ai: false, user: false })
   const sessionId = ref(null)
   let isConnecting = false
   let heartbeatTimer = null
@@ -59,6 +60,9 @@ export function useWebSocket() {
           // 处理不同类型的消息
           if (data.type === 'chat_message') {
             messages.value.push(data.message)
+          } else if (data.type === 'typing_status') {
+            const who = data.sender || 'ai'
+            typing.value[who] = !!data.is_typing
           } else if (data.type === 'pong') {
             // 心跳响应
             // console.debug('收到pong')
@@ -182,6 +186,7 @@ export function useWebSocket() {
     sendReadReceipt,
     isConnected,
     messages,
+    typing,
     sessionId
   }
 }

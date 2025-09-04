@@ -95,73 +95,115 @@ class MessageViewSet(viewsets.ModelViewSet):
                 'status': 'busy'
             }, status=status.HTTP_200_OK)
 
-        # 记录用户最近一次主动消息时间（用于主动触发暂停）
-        cache.set(f"last_user_message_at:{user.id}", timezone.now().timestamp(), timeout=3600)
+        try:
+            # 记录用户最近一次主动消息时间（用于主动触发暂停）
+            cache.set(f"last_user_message_at:{user.id}", timezone.now().timestamp(), timeout=3600)
 
-        # 让 LLM 生成单条回复，避免刷屏
-        chunks = self._ai_reply_chunks(content, content_type)
-        # 若模型建议配图，则将图片生成交给混元
-        ai_messages = []
-        if not chunks:
-            chunks = ["我在呢，继续跟我说说～"]
-        text_reply = (chunks or [""])[0]
-        # 规则：当文本包含【图片描述】或以“生成一张”开头时，触发图片生成
-        wants_image = ('【图片' in text_reply) or text_reply.strip().startswith('生成一张')
-        if wants_image:
-            # 提取简要描述作为图生图提示
-            import re
-            desc = re.sub(r"[\[【]图片[^\]】]*[\]】]", "", text_reply)
-            desc = (desc or '一张情境照片').strip()
-            img = multimodal_handler.generate_image_hunyuan(desc, user_id=user.id)
-            if img and img.get('image_url'):
-                # 入库图片消息并推送
-                ai_img = Message.objects.create(session=session, content=img['image_url'], content_type='image', sender='ai')
-                ai_messages.append(ai_img)
-                async_to_sync(channel_layer.group_send)(
-                    f"chat_{session.id}",
-                    {
-                        'type': 'chat.message',
-                        'message': {
-                            'id': ai_img.id,
-                            'content': img['image_url'],
-                            'sender': 'ai',
-                            'content_type': 'image',
-                            'timestamp': ai_img.timestamp.isoformat(),
-                            'text': desc,
+            # 让 LLM 生成单条回复，避免刷屏（加入低能量概率）
+            chunks = self._ai_reply_chunks(content, content_type)
+            # 10% 概率采用低能量短回应，降低压迫感
+            try:
+                import random
+                if random.random() < 0.10:
+                    low_energy_pool = [
+                        "嗯嗯我在～",
+                        "哈哈，真是～",
+                        "懂了，我听着呢。",
+                        "行，我知道啦～",
+                        "先记下了，继续说～",
+                    ]
+                    chunks = [random.choice(low_energy_pool)]
+            except Exception:
+                pass
+            # 若模型建议配图，则将图片生成交给混元
+            ai_messages = []
+            if not chunks:
+                chunks = ["我在呢，继续跟我说说～"]
+            text_reply = (chunks or [""])[0]
+
+            # 检测是否可能被截断，尝试一次短续写
+            text_reply = self._maybe_continue_if_cutoff(text_reply, content)
+
+            # 规则：当文本包含【图片描述】或以“生成一张”开头时，触发图片生成
+            wants_image = ('【图片' in text_reply) or text_reply.strip().startswith('生成一张')
+            if wants_image:
+                # 提取简要描述作为图生图提示
+                import re
+                desc = re.sub(r"[\[【]图片[^\]】]*[\]】]", "", text_reply)
+                desc = (desc or '一张情境照片').strip()
+                img = multimodal_handler.generate_image_hunyuan(desc, user_id=user.id)
+                if img and img.get('image_url'):
+                    # 入库图片消息并推送
+                    ai_img = Message.objects.create(session=session, content=img['image_url'], content_type='image', sender='ai')
+                    ai_messages.append(ai_img)
+                    async_to_sync(channel_layer.group_send)(
+                        f"chat_{session.id}",
+                        {
+                            'type': 'chat.message',
+                            'message': {
+                                'id': ai_img.id,
+                                'content': img['image_url'],
+                                'sender': 'ai',
+                                'content_type': 'image',
+                                'timestamp': ai_img.timestamp.isoformat(),
+                                'text': desc,
+                            }
                         }
+                    )
+                    # 记录AI消息时间
+                    now_ts = timezone.now().timestamp()
+                    cache.set(f"last_ai_message_at:{user.id}", now_ts, timeout=3600)
+                    cache.set(f"last_ai_message_at_session:{session.id}", now_ts, timeout=3600)
+
+            # 仅保留首条文本作为即时广播
+            chunks = [text_reply]
+
+            channel_layer = get_channel_layer()
+            # 推送 AI 正在输入（前端显示打字中）
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{session.id}",
+                { 'type': 'typing_status', 'is_typing': True, 'sender': 'ai' }
+            )
+            ai_msgs = []
+            for text_part in chunks:
+                ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
+                ai_msgs.append(ai_msg)
+                payload = {
+                    'type': 'chat.message',
+                    'message': {
+                        'id': ai_msg.id,
+                        'content': text_part,
+                        'sender': 'ai',
+                        'content_type': 'text',
+                        'timestamp': ai_msg.timestamp.isoformat()
                     }
-                )
-        # 仅保留首条文本作为即时广播
-        chunks = [text_reply]
-
-        channel_layer = get_channel_layer()
-        ai_msgs = []
-        for text_part in chunks:
-            ai_msg = Message.objects.create(session=session, content=text_part, content_type='text', sender='ai')
-            ai_msgs.append(ai_msg)
-            payload = {
-                'type': 'chat.message',
-                'message': {
-                    'id': ai_msg.id,
-                    'content': text_part,
-                    'sender': 'ai',
-                    'content_type': 'text',
-                    'timestamp': ai_msg.timestamp.isoformat()
                 }
+                # 仅推送到会话组，避免重复（同一连接通常同时在用户组与会话组）
+                async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
+                # 记录AI消息时间
+                now_ts = timezone.now().timestamp()
+                cache.set(f"last_ai_message_at:{user.id}", now_ts, timeout=3600)
+                cache.set(f"last_ai_message_at_session:{session.id}", now_ts, timeout=3600)
+
+            # 关闭打字中状态
+            async_to_sync(channel_layer.group_send)(
+                f"chat_{session.id}",
+                { 'type': 'typing_status', 'is_typing': False, 'sender': 'ai' }
+            )
+
+            # 标记需要用户先回应（强制回合制）
+            cache.set(f"await_user_reply:{session.id}", 1, timeout=600)
+
+            resp_body = {
+                'success': True,
+                'message': MessageSerializer(user_msg).data,
+                'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
+                'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
             }
-            # 仅推送到会话组，避免重复（同一连接通常同时在用户组与会话组）
-            async_to_sync(channel_layer.group_send)(f"chat_{session.id}", payload)
-
-        resp_body = {
-            'success': True,
-            'message': MessageSerializer(user_msg).data,
-            'ai_message': MessageSerializer(ai_msgs[0]).data if ai_msgs else None,
-            'ai_messages': MessageSerializer(ai_msgs, many=True).data if ai_msgs else []
-        }
-        # 释放锁
-        cache.delete(lock_key)
-
-        return Response(resp_body, status=status.HTTP_201_CREATED)
+            return Response(resp_body, status=status.HTTP_201_CREATED)
+        finally:
+            # 确保释放锁
+            cache.delete(lock_key)
 
     def _ai_reply_chunks(self, text: str, content_type: str):
         # 动态补充高情商示例作为few-shots（若已缓存则复用）
@@ -291,5 +333,34 @@ class MessageViewSet(viewsets.ModelViewSet):
         if len(out) == 1:
             out.append("我在呢，慢慢说就好～")
         return out or ["我在呢～继续跟我说说？"]
+
+    def _maybe_continue_if_cutoff(self, text: str, user_text: str) -> str:
+        """若文本疑似被截断（以连接词/标点停在句中），尝试用主模型小幅续写并合并。"""
+        try:
+            s = (text or '').strip()
+            if not s:
+                return s
+            suspicious_endings = ('的', '和', '因为', '但', '而', '，', '、', '：', '...','……')
+            looks_cut = (len(s) >= 20 and any(s.endswith(e) for e in suspicious_endings))
+            if not looks_cut:
+                return s
+            client = TencentDeepSeekClient()
+            instruction = (
+                '延续上一句的尾部，补齐意思，最多25字；保持口语化与原语气；'
+                '只输出续写内容，不要重复前文，不要另起新话题，不要解释。'
+            )
+            msgs = [
+                {"Role": "system", "Content": get_system_prompt()},
+                {"Role": "user", "Content": instruction + f"\n用户消息片段：{(user_text or '')[:80]}\n已生成片段（尾部）：{s[-80:]}"},
+            ]
+            r = client.chat(msgs, stream=False)
+            addon = (r.get('text') or '').strip()
+            if addon:
+                merged = s + addon
+                fixed = self._post_process_chunks([merged])
+                return (fixed[0] if fixed else merged)
+            return s
+        except Exception:
+            return text
 
 

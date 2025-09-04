@@ -85,6 +85,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
         await self.send(json.dumps(payload))
 
+    async def typing_status(self, event):
+        # 将服务端的打字状态透传给前端
+        is_typing = event.get('is_typing', False)
+        sender = event.get('sender', 'ai')
+        await self.send(json.dumps({
+            'type': 'typing_status',
+            'is_typing': is_typing,
+            'sender': sender,
+            'session_id': self.session_id
+        }))
+
     @database_sync_to_async
     def verify_session(self):
         try:

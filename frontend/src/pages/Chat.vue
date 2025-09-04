@@ -33,6 +33,9 @@
 
     <!-- 聊天消息区域 -->
     <div class="chat-messages" ref="messagesContainer">
+      <div v-if="isAiTyping" class="typing-indicator">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
       <div 
         v-for="message in messages" 
         :key="message.id"
@@ -41,7 +44,7 @@
         <!-- AI消息 -->
         <div v-if="message.sender === 'ai'" class="message ai-message">
           <div class="message-avatar">
-            <RobotOutlined class="avatar-icon" />
+            <img :src="aiAvatar" @error="onAiAvatarError" class="avatar-img" alt="Mira" />
           </div>
           <div class="message-content">
             <!-- 文字消息 -->
@@ -81,6 +84,9 @@
 
         <!-- 用户消息 -->
         <div v-else class="message user-message">
+          <div class="message-avatar">
+            <img :src="userAvatar" @error="onUserAvatarError" class="avatar-img" alt="You" />
+          </div>
           <div class="message-content">
             <div v-if="message.contentType === 'text'" class="text-message">
               {{ message.content }}
@@ -198,7 +204,7 @@ export default {
   },
   setup() {
     const chatStore = useChatStore()
-    const { connect, /* sendMessage: sendWSMessage, */ isConnected, messages: wsMessages, sessionId } = useWebSocket()
+    const { connect, /* sendMessage: sendWSMessage, */ isConnected, messages: wsMessages, sessionId, typing } = useWebSocket()
     const { startRecording, stopRecording, cancelRecording, isRecording, recordingTime } = useAudioRecorder()
     
     // 响应式数据
@@ -226,6 +232,12 @@ export default {
     const currentSessionId = ref(null)
     const isLoading = ref(false)
     const error = ref('')
+
+    // 固定头像（可替换为项目 public 目录下的真实头像）
+    const aiAvatar = ref('/images/ai_avatar.jpg')
+    const userAvatar = ref('/images/user_avatar.jpg')
+    const onAiAvatarError = (e) => { e.target.src = 'https://i.pravatar.cc/100?img=48' }
+    const onUserAvatarError = (e) => { e.target.src = 'https://i.pravatar.cc/100?img=1' }
     
     // 计算属性
     const canSend = computed(() => {
@@ -414,6 +426,9 @@ export default {
       await nextTick()
       scrollToBottom()
     }, { deep: true })
+
+    // 打字中状态（AI）
+    const isAiTyping = computed(() => !!(typing?.ai))
     
     const formatTime = (timestamp) => {
       const date = new Date(timestamp)
@@ -499,6 +514,11 @@ export default {
       isLoading,
       error,
       currentSessionId,
+      aiAvatar,
+      userAvatar,
+      onAiAvatarError,
+      onUserAvatarError,
+      isAiTyping,
       shouldShowImageText,
       imageTextForDisplay
     }
@@ -623,6 +643,27 @@ export default {
   background-color: #ffffff;
 }
 
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 12px 44px; /* 对齐AI头像后的位置 */
+}
+.typing-indicator .dot {
+  width: 6px;
+  height: 6px;
+  background-color: #c7c7cc;
+  border-radius: 50%;
+  animation: blink 1.2s infinite ease-in-out;
+}
+.typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.2; }
+  40% { opacity: 1; }
+}
+
 .message-wrapper {
   margin-bottom: 16px;
 }
@@ -643,15 +684,17 @@ export default {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #007AFF, #5AC8FA);
+  background: #f2f2f7;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.message-avatar .avatar-icon {
-  font-size: 16px;
-  color: #ffffff;
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
 }
 
 .message-content {
@@ -664,6 +707,9 @@ export default {
   font-size: 16px;
   line-height: 1.4;
   word-wrap: break-word;
+  display: inline-block; /* 关键：使气泡宽度随内容自适应 */
+  width: auto;
+  max-width: 75%; /* 限制最长行宽，避免过宽影响阅读 */
 }
 
 .ai-message .text-message {
@@ -674,6 +720,14 @@ export default {
 .user-message .text-message {
   background-color: #007AFF;
   color: #ffffff;
+}
+
+/* 让用户侧文本气泡靠右，但内部文字保持左对齐 */
+.user-message .message-content {
+  text-align: right;
+}
+.user-message .text-message {
+  text-align: left;
 }
 
 .audio-message {

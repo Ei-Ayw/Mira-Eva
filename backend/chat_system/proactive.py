@@ -125,6 +125,25 @@ class ProactiveEngine:
                 if delta < 60:
                     logger.info(f"用户 {user_id} 最近{int(delta)}秒内有发言，跳过主动触发")
                     return False
+
+            # 最近10分钟内若AI刚说过话，且会话内最后一条消息是AI，则不要插话，等待用户先说
+            last_ai_ts = cache.get(f"last_ai_message_at:{user_id}")
+            if last_ai_ts:
+                if timezone.now().timestamp() - float(last_ai_ts) < 600:
+                    try:
+                        from chat_system.models import ChatSession, Message
+                        session_id = self.user_sessions.get(user_id)
+                        if session_id:
+                            if str(session_id).isdigit():
+                                session = ChatSession.objects.get(id=int(session_id))
+                            else:
+                                session = ChatSession.objects.get(session_id=str(session_id))
+                            last_msg = Message.objects.filter(session=session).order_by('-timestamp').first()
+                            if last_msg and last_msg.sender == 'ai':
+                                logger.info("上条为AI消息，等待用户先说，跳过主动触发")
+                                return False
+                    except Exception:
+                        pass
             # 检查用户是否在线
             if not self.is_user_online(user_id):
                 logger.warning(f"用户 {user_id} 不在线，跳过主动消息发送")
@@ -142,8 +161,15 @@ class ProactiveEngine:
                 }
             }
 
-            # 仅发送到优先的会话组；若没有已知会话，退回到用户组
+            # 若会话处于等待用户回应阶段（回合制），则不主动打断
             session_id = self.user_sessions.get(user_id)
+            if session_id:
+                await_key = f"await_user_reply:{session_id}"
+                if cache.get(await_key):
+                    logger.info(f"会话 {session_id} 正在等待用户回应，跳过主动触发")
+                    return False
+
+            # 仅发送到优先的会话组；若没有已知会话，退回到用户组
             if session_id:
                 async_to_sync(self.channel_layer.group_send)(f"chat_{session_id}", payload)
             else:
