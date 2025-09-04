@@ -129,6 +129,23 @@ class MessageViewSet(viewsets.ModelViewSet):
         }
         return Response(resp_body, status=status.HTTP_201_CREATED)
 
+    def _schedule_debounced_reply(self, session_id, user_id):
+        """启动后台异步AI回复生成"""
+        def background_reply():
+            try:
+                import time
+                time.sleep(0.5)  # 短暂延迟，等待可能的连续消息
+                self._generate_debounced_ai_reply(session_id, user_id)
+            except Exception as e:
+                logger.error(f"后台AI回复生成失败: {e}")
+        
+        import threading
+        thread = threading.Thread(target=background_reply)
+        thread.daemon = True
+        thread.start()
+
+    def _legacy_sync_ai_reply(self, session, user_msg):
+        """旧版同步AI回复逻辑，保留用于调试"""
         # 会话状态锁：同一用户/会话同时仅允许一个AI生成任务
         lock_key = f"lock:session:{session.id}"
         got_lock = cache.add(lock_key, '1', timeout=15)
