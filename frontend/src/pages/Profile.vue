@@ -14,9 +14,14 @@
         <span class="back-icon">←</span>
       </button>
       <h1 class="page-title">Profile & Memories</h1>
-      <button class="documents-btn" @click="goToDocuments">
-        <FileTextOutlined class="documents-icon" />
-      </button>
+      <div class="header-actions">
+        <button class="documents-btn" @click="goToDocuments">
+          <FileTextOutlined class="documents-icon" />
+        </button>
+        <button class="memories-btn" @click="goToMemories">
+          <DatabaseOutlined class="memories-icon" />
+        </button>
+      </div>
     </div>
 
     <!-- 个人资料卡片 -->
@@ -112,7 +117,8 @@ import {
   StarOutlined,
   AimOutlined,
   MessageOutlined,
-  FileTextOutlined
+  FileTextOutlined,
+  DatabaseOutlined
 } from '@ant-design/icons-vue'
 
 export default {
@@ -126,7 +132,8 @@ export default {
     StarOutlined,
     AimOutlined,
     MessageOutlined,
-    FileTextOutlined
+    FileTextOutlined,
+    DatabaseOutlined
   },
   setup() {
     const router = useRouter()
@@ -159,6 +166,10 @@ export default {
       router.push('/documents')
     }
 
+    const goToMemories = () => {
+      router.push('/memories')
+    }
+
     const loadProfileData = async () => {
       try {
         isLoading.value = true
@@ -181,7 +192,7 @@ export default {
 
     onMounted(loadProfileData)
 
-    return { isLoading, error, summary, memoryCountsList, displayName, goBack, goToDocuments }
+    return { isLoading, error, summary, memoryCountsList, displayName, goBack, goToDocuments, goToMemories }
   }
 }
 </script>
@@ -256,7 +267,14 @@ export default {
   flex: 1;
 }
 
-.documents-btn {
+.header-actions {
+  display: flex;
+  gap: 12px;
+  margin-left: 16px;
+}
+
+.documents-btn,
+.memories-btn {
   width: 40px;
   height: 40px;
   border-radius: 50%;
@@ -265,16 +283,17 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-left: 16px;
   transition: all 0.3s ease;
 }
 
-.documents-btn:hover {
+.documents-btn:hover,
+.memories-btn:hover {
   background-color: #0056CC;
   transform: translateY(-2px);
 }
 
-.documents-icon {
+.documents-icon,
+.memories-icon {
   font-size: 18px;
   color: #FFFFFF;
 }

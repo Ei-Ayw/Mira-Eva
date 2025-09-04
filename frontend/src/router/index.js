@@ -5,6 +5,7 @@ import Profile from '@/pages/Profile.vue'
 import Settings from '@/pages/Settings.vue'
 import Demo from '@/pages/Demo.vue'
 import DocumentUpload from '@/pages/DocumentUpload.vue'
+import MemoryManagement from '@/pages/MemoryManagement.vue'
 import Login from '@/pages/Login.vue'
 
 const routes = [
@@ -46,6 +47,12 @@ const routes = [
     path: '/documents',
     name: 'DocumentUpload',
     component: DocumentUpload,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/memories',
+    name: 'MemoryManagement',
+    component: MemoryManagement,
     meta: { requiresAuth: true }
   }
 ]

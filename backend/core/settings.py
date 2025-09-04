@@ -57,7 +57,19 @@ MIDDLEWARE = [
 ASGI_APPLICATION = 'core.asgi.application'
 CHANNEL_LAYERS = {
     'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer'
+        # 使用 Redis Channel Layer 以支持多进程/生产部署
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')],
+        },
+    }
+}
+# Django Cache（用于会话锁）
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/1'),
+        'TIMEOUT': 60 * 5,
     }
 }
 

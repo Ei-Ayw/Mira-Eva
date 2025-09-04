@@ -63,10 +63,10 @@
             <!-- 图片消息 -->
             <div v-else-if="message.contentType === 'image'" class="image-message">
               <div class="image-content">
-                <p class="image-text">{{ message.text }}</p>
+                <p v-if="shouldShowImageText(message.text)" class="image-text">{{ imageTextForDisplay(message.text) }}</p>
                 <img 
                   :src="message.content" 
-                  :alt="message.alt" 
+                  :alt="message.alt || imageTextForDisplay(message.text)" 
                   @click="previewImage(message.content)"
                   @error="handleImageError"
                   class="message-image"
@@ -74,7 +74,7 @@
               </div>
             </div>
             
-            <!-- 时间戳 -->
+            <!-- 时间戳（AI） -->
             <div class="message-time">{{ formatTime(message.timestamp) }}</div>
           </div>
         </div>
@@ -94,6 +94,7 @@
                 <span class="duration">{{ formatDuration(message.duration) }}</span>
               </div>
             </div>
+            <!-- 时间戳（用户） -->
             <div class="message-time">{{ formatTime(message.timestamp) }}</div>
           </div>
         </div>
@@ -165,7 +166,7 @@
 </template>
 
 <script>
-import { ref, reactive, computed, onMounted, nextTick, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, onUnmounted, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { formatTime, formatDuration } from '@/utils/format'
@@ -197,7 +198,7 @@ export default {
   },
   setup() {
     const chatStore = useChatStore()
-    const { connect, sendMessage: sendWSMessage, isConnected, messages: wsMessages, sessionId } = useWebSocket()
+    const { connect, /* sendMessage: sendWSMessage, */ isConnected, messages: wsMessages, sessionId } = useWebSocket()
     const { startRecording, stopRecording, cancelRecording, isRecording, recordingTime } = useAudioRecorder()
     
     // 响应式数据
@@ -211,6 +212,7 @@ export default {
       }
     ])
     const inputText = ref('')
+    const isSending = ref(false)
     const isVoiceInput = ref(false)
     const messagesContainer = ref(null)
     const textInput = ref(null)
@@ -227,6 +229,7 @@ export default {
     
     // 计算属性
     const canSend = computed(() => {
+      if (isSending.value) return false
       return inputText.value.trim() || isRecording.value
     })
     
@@ -280,40 +283,35 @@ export default {
     
     const sendMessage = async () => {
       if (!canSend.value) return
+      if (isSending.value) return
+      isSending.value = true
       
-      let messageData = {
-        id: Date.now(),
-        sender: 'user',
-        timestamp: new Date()
-      }
-      
-      if (isVoiceInput.value && isRecording.value) {
-        // 发送语音消息
-        messageData.contentType = 'audio'
-        messageData.content = await stopRecording()
-        messageData.duration = recordingTime.value
-      } else {
-        // 发送文字消息
-        messageData.contentType = 'text'
-        messageData.content = inputText.value.trim()
-        inputText.value = ''
-      }
-      
-      // 本地先展示
-      messages.value.push(messageData)
-      
-      // WebSocket
-      if (isConnected.value) {
-        sendWSMessage({
-          type: 'chat_message',
-          content: messageData.content,
-          content_type: messageData.contentType,
-        })
-      }
-      
-      // REST API
-      if (currentSessionId.value) {
-        try {
+      try {
+        // 生成客户端消息ID用于去重
+        const clientMsgId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+          ? crypto.randomUUID() 
+          : `cmid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+        const messageData = {
+          id: clientMsgId,
+          sender: 'user',
+          timestamp: new Date(),
+          contentType: (isVoiceInput.value && isRecording.value) ? 'audio' : 'text',
+        }
+
+        if (messageData.contentType === 'audio') {
+          messageData.content = await stopRecording()
+          messageData.duration = recordingTime.value
+        } else {
+          messageData.content = inputText.value.trim()
+          inputText.value = ''
+        }
+
+        // 本地先展示（仅一次）
+        messages.value.push(messageData)
+
+        // 仅走 REST，避免与 WS 双通道重复
+        if (currentSessionId.value) {
           const payload = {
             content_type: messageData.contentType,
             content: messageData.content,
@@ -321,30 +319,21 @@ export default {
             alt: messageData.alt,
             duration: messageData.duration,
             session_id: currentSessionId.value,
+            client_msg_id: clientMsgId,
           }
-          const resp = await chatAPI.sendMessage(currentSessionId.value, payload)
-          // 追加AI回复（后端返回 ai_message）
-          if (resp && resp.ai_message) {
-            const ai = resp.ai_message
-            messages.value.push({
-              id: ai.id,
-              sender: ai.sender, // 'ai'
-              contentType: ai.content_type,
-              content: ai.content,
-              text: ai.text,
-              alt: ai.alt,
-              duration: ai.duration,
-              timestamp: new Date(ai.timestamp)
-            })
+          try {
+            await chatAPI.sendMessage(currentSessionId.value, payload)
+            // 不再在这里追加 AI 回复，交给 WebSocket 推送，避免重复
+          } catch (error) {
+            console.error('发送消息到后端失败:', error)
           }
-        } catch (error) {
-          console.error('发送消息到后端失败:', error)
         }
+
+        await nextTick()
+        scrollToBottom()
+      } finally {
+        isSending.value = false
       }
-      
-      // 滚动到底部
-      await nextTick()
-      scrollToBottom()
     }
     
     const goToProfile = () => {
@@ -393,6 +382,38 @@ export default {
         messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
       }
     }
+
+    // 将 WebSocket 消息映射到本地渲染结构（仅处理 AI 消息，避免用户消息重复）
+    const wsCursor = ref(0)
+    const seenMessageIds = new Set()
+    watch(wsMessages, async (list) => {
+      while (wsCursor.value < list.length) {
+        const raw = list[wsCursor.value]
+        const sender = raw.sender || 'ai'
+        if (sender === 'ai') {
+          const mappedId = raw.id || `${raw.timestamp || Date.now()}_${(raw.content || '').slice(0, 12)}`
+          if (seenMessageIds.has(mappedId)) {
+            wsCursor.value += 1
+            continue
+          }
+          const mapped = {
+            id: mappedId,
+            sender,
+            contentType: raw.contentType || raw.content_type || 'text',
+            content: raw.content || raw.text || '',
+            text: raw.text,
+            alt: raw.alt,
+            duration: raw.duration,
+            timestamp: new Date(raw.timestamp || Date.now())
+          }
+          messages.value.push(mapped)
+          seenMessageIds.add(mappedId)
+        }
+        wsCursor.value += 1
+      }
+      await nextTick()
+      scrollToBottom()
+    }, { deep: true })
     
     const formatTime = (timestamp) => {
       const date = new Date(timestamp)
@@ -437,9 +458,26 @@ export default {
       // 清理资源
     })
     
+    const shouldShowImageText = (text) => {
+      if (!text) return false
+      const t = String(text).trim()
+      if (!t) return false
+      // 隐藏以“图例”开头的生硬描述
+      if (/^图例[:：]/.test(t)) return false
+      return true
+    }
+
+    const imageTextForDisplay = (text) => {
+      if (!text) return ''
+      let t = String(text).trim()
+      t = t.replace(/^图例[:：]\s*/, '')
+      return t
+    }
+
     return {
       messages,
       inputText,
+      isSending,
       isVoiceInput,
       isRecording,
       recordingTime,
@@ -460,7 +498,9 @@ export default {
       handleImageError,
       isLoading,
       error,
-      currentSessionId
+      currentSessionId,
+      shouldShowImageText,
+      imageTextForDisplay
     }
   }
 }

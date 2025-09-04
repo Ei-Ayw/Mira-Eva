@@ -5,6 +5,11 @@ export function useWebSocket() {
   const isConnected = ref(false)
   const messages = ref([])
   const sessionId = ref(null)
+  let isConnecting = false
+  let heartbeatTimer = null
+  let reconnectTimer = null
+  let reconnectAttempts = 0
+  const maxReconnectDelay = 30000 // 30s
   
   const connect = (sessionIdParam) => {
     if (!sessionIdParam) {
@@ -12,15 +17,38 @@ export function useWebSocket() {
       return
     }
     
+    // 避免重复连接：若已连接相同会话，直接返回
+    if (ws.value && (isConnected.value || isConnecting) && sessionId.value === sessionIdParam) {
+      return
+    }
+    // 若切换会话，先断开旧连接
+    if (ws.value && sessionId.value && sessionId.value !== sessionIdParam) {
+      disconnect()
+    }
+
     sessionId.value = sessionIdParam
     const wsUrl = `ws://localhost:8000/ws/chat/${sessionIdParam}/`
     
     try {
+      isConnecting = true
       ws.value = new WebSocket(wsUrl)
       
       ws.value.onopen = () => {
         console.log('WebSocket连接已建立')
         isConnected.value = true
+        isConnecting = false
+        reconnectAttempts = 0
+        // 启动心跳：每30秒发送一次ping
+        clearInterval(heartbeatTimer)
+        heartbeatTimer = setInterval(() => {
+          if (ws.value && isConnected.value) {
+            try {
+              ws.value.send(JSON.stringify({ type: 'ping', ts: Date.now() }))
+            } catch (e) {
+              console.warn('心跳发送失败', e)
+            }
+          }
+        }, 30000)
       }
       
       ws.value.onmessage = (event) => {
@@ -31,6 +59,9 @@ export function useWebSocket() {
           // 处理不同类型的消息
           if (data.type === 'chat_message') {
             messages.value.push(data.message)
+          } else if (data.type === 'pong') {
+            // 心跳响应
+            // console.debug('收到pong')
           } else if (data.type === 'typing_status') {
             // 处理打字状态
             console.log('用户打字状态:', data)
@@ -50,6 +81,19 @@ export function useWebSocket() {
       ws.value.onclose = () => {
         console.log('WebSocket连接已关闭')
         isConnected.value = false
+        isConnecting = false
+        clearInterval(heartbeatTimer)
+        heartbeatTimer = null
+        // 自动重连（指数退避）
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay)
+        reconnectAttempts += 1
+        clearTimeout(reconnectTimer)
+        reconnectTimer = setTimeout(() => {
+          if (sessionId.value) {
+            console.log(`尝试重连，延迟: ${delay}ms ...`)
+            connect(sessionId.value)
+          }
+        }, delay)
       }
       
       ws.value.onerror = (error) => {
@@ -67,6 +111,11 @@ export function useWebSocket() {
       ws.value = null
       isConnected.value = false
       sessionId.value = null
+      isConnecting = false
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
     }
   }
   
