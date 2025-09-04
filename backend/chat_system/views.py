@@ -259,46 +259,49 @@ class MessageViewSet(viewsets.ModelViewSet):
             return any(term in output for term in bad_terms)
 
         def _rewrite_with_policy(user_text: str, raw_output: str) -> str:
-            """使用 DeepSeek 将输出重写为稳定的 Mira 口吻，去幻觉、锁定身份。"""
+            """使用 DeepSeek 将输出重写为稳定的 Mira 微信聊天风格。"""
             try:
                 client = TencentDeepSeekClient()
                 instruction = (
-                    '请把下面这段回复，重写为“Mira”的微信消息：\n'
+                    '请把下面这段回复，改写为"Mira"和微信好友聊天的风格：\n'
                     '要求：\n'
-                    '1) 只能以“Mira”自称；禁止出现AI/模型/虚拟/数字等词；\n'
-                    '2) 选择1-2个合理生活事件组织简短叙事；\n'
-                    '3) 口语化、自然、有情绪，可包含表情与（动作）；\n'
-                    '4) 如需配图仅输出【图片描述】文字，不输出技术细节；\n'
-                    '5) 严禁胡言乱语与无意义拼接；\n'
+                    '1) 像微信聊天一样，每句话10-20字，碎片化表达；\n'
+                    '2) 先回应对方，再随机分享自己的小事（街景、美食、遇到的人等）；\n'
+                    '3) 口语化、轻松，可以"哈哈哈"、"真的吗"、"我也是"；\n'
+                    '4) 如果想分享图片，用【随手拍：描述】格式；\n'
+                    '5) 记得之前聊过的话题，自然延续；\n'
                     '只输出最终消息，不要解释。'
                 )
                 msgs = [
                     {"Role": "system", "Content": get_system_prompt()},
-                    {"Role": "user", "Content": instruction + f"\n\n原始用户输入：{user_text}\n原始输出：{raw_output}"},
+                    {"Role": "user", "Content": instruction + f"\n\n用户刚说：{user_text}\n原始输出：{raw_output}"},
                 ]
                 r = client.chat(msgs, stream=False)
                 if r.get('success') and (r.get('text') or '').strip():
                     return r['text'].strip()
             except Exception:
                 pass
-            # 兜底：直接给出稳定口吻模板
+            # 兜底：微信聊天风格模板
             base = user_text or ''
             if len(base) <= 8:
-                return '我刚想起你就来叨叨两句啦～今天过得咋样？（探头）'
-            return f"我看了你说的这件事，挺有画面感的耶！（小声）{base[:36]}…你现在心情怎么样？"
+                return random.choice(['哈哈收到', '我在呢', '嗯嗯～', '真的吗'])
+            return f"哈哈我懂\n刚才路过看到个{random.choice(['小猫', '咖啡店', '夕阳'])}\n想起你说的话"
 
         try:
             client = TencentDeepSeekClient()
             instruction = (
-                '你是Mira，请以“碎嘴+口语化”的方式，输出 2-5 句小短句，每句不超过40字。'
-                '只输出 JSON，格式：{"sentences": ["句1","句2",...]}。不要额外解释。'
+                '你是Mira，用微信聊天的方式回复朋友，要求：'
+                '1) 每句话10-20字，像打字聊天一样碎片化；'
+                '2) 先回应对方，再分享自己的小事；'
+                '3) 输出2-4句话的JSON格式：{"sentences": ["句1","句2",...]}；'
+                '4) 轻松随意，像朋友间聊天。'
             )
             msgs = [
                 {"Role": "system", "Content": get_system_prompt()},
                 {"Role": "user", "Content": instruction + "\n\n用户消息：" + (text or '') + "\n\n" + get_style_notes()},
             ]
             if exemplars:
-                sample = "\n\n".join([f"【参考】{s[:120]}" for s in exemplars[:5]])
+                sample = "\n\n".join([f"【参考】{s[:120]}" for s in exemplars[:3]])
                 msgs.append({"Role": "assistant", "Content": sample})
             r = client.chat(msgs, stream=False)
             if r.get('success') and (r.get('text') or '').strip():
@@ -308,18 +311,18 @@ class MessageViewSet(viewsets.ModelViewSet):
                     data = json.loads(raw)
                     arr = data.get('sentences') if isinstance(data, dict) else None
                     chunks = [s.strip() for s in (arr or []) if isinstance(s, str) and s.strip()]
-                    if 1 <= len(chunks) <= 5:
-                        return self._post_process_chunks(chunks)
+                    if 1 <= len(chunks) <= 4:
+                        return self._post_process_chunks_wechat(chunks)
                 except Exception:
                     pass
                 # 若非JSON，回退为重写后单句拆分
                 candidate = _rewrite_with_policy(text or '', raw)
-                return self._post_process_chunks(self._split_short_sentences(candidate))
+                return self._post_process_chunks_wechat(self._split_short_sentences(candidate))
         except Exception:
             pass
         # fallback：按用户句子生成友好回应并拆分
         candidate = _rewrite_with_policy(text or '', (text or ''))
-        return self._post_process_chunks(self._split_short_sentences(candidate))
+        return self._post_process_chunks_wechat(self._split_short_sentences(candidate))
 
     def _split_short_sentences(self, text: str):
         """将一段文本按句号/换行拆成<=5条短句"""
@@ -332,8 +335,8 @@ class MessageViewSet(viewsets.ModelViewSet):
             return [text]
         return cleaned[:5]
 
-    def _post_process_chunks(self, chunks):
-        """对短句做安全与风格规整：去文件名/长括号、限长、去重、补标点。"""
+    def _post_process_chunks_wechat(self, chunks):
+        """微信聊天风格后处理：短句化、去重、轻量标点"""
         import re
         seen = set()
         out = []
@@ -344,30 +347,31 @@ class MessageViewSet(viewsets.ModelViewSet):
             # 去除文件名/链接
             s = re.sub(r"\S+\.(?:jpg|jpeg|png|gif|webp)\b", "", s, flags=re.IGNORECASE)
             s = re.sub(r"https?://\S+", "", s)
-            # 收敛括号内容过长
-            s = re.sub(r"（[^）]{15,}）", "（…）", s)
-            s = re.sub(r"\([^)]{15,}\)", "（…）", s)
+            # 收敛过长括号
+            s = re.sub(r"（[^）]{10,}）", "（…）", s)
+            s = re.sub(r"\([^)]{10,}\)", "（…）", s)
             # 压缩空白
             s = re.sub(r"\s+", " ", s)
-            # 限长：保持 10~28 字左右
-            max_len = 28
+            # 微信风格限长：10-20字
+            max_len = 20
             if len(s) > max_len:
                 s = s[:max_len].rstrip()
-            # 末尾补标点
-            if not re.search(r"[。！？!]$", s):
-                s = s + "。"
+            # 轻量标点：不强制句号，保持微信聊天感
+            if len(s) > 6 and not re.search(r"[。！？!~～]$", s):
+                s = s + "～"
             # 去重（忽略标点）
-            key = re.sub(r"[。！？!,.，\s]", "", s)
+            key = re.sub(r"[。！？!,.，\s~～]", "", s)
             if key in seen:
                 continue
             seen.add(key)
             out.append(s)
-            if len(out) >= 5:
+            if len(out) >= 4:  # 微信聊天不超过4条
                 break
-        # 至少两句，若不足，用温柔收尾
-        if len(out) == 1:
-            out.append("我在呢，慢慢说就好～")
-        return out or ["我在呢～继续跟我说说？"]
+        return out or ["嗯嗯我在"]
+    
+    def _post_process_chunks(self, chunks):
+        """原版后处理方法，保持兼容性"""
+        return self._post_process_chunks_wechat(chunks)
 
     def _maybe_continue_if_cutoff(self, text: str, user_text: str) -> str:
         """若文本疑似被截断（以连接词/标点停在句中），尝试用主模型小幅续写并合并。"""
@@ -452,19 +456,21 @@ class MessageViewSet(viewsets.ModelViewSet):
                     combined_text = last_user_msg.content if last_user_msg else ''
 
                 # 生成候选句子
-                chunks = self._ai_reply_chunks(combined_text, 'text') or ["我在呢，继续跟我说说～"]
-                # 低能量概率：短输入（<=8字且非疑问）更高，默认10%
+                chunks = self._ai_reply_chunks(combined_text, 'text') or ["嗯嗯我在"]
+                # 微信聊天低能量概率：短输入更高，模拟真人简短回应
                 try:
                     txt = (combined_text or '').strip()
                     is_short = len(txt) <= 8 and ('?' not in txt) and ('？' not in txt) and ('吗' not in txt)
-                    prob = 0.6 if is_short else 0.10
+                    prob = 0.7 if is_short else 0.15
                     if random.random() < prob:
                         low_energy_pool = [
-                            "嗯嗯我在～",
-                            "哈哈真的",
-                            "懂了，我听着呢。",
-                            "行，我知道啦～",
-                            "先记下了，继续说～",
+                            "哈哈哈",
+                            "真的吗",
+                            "我也是",
+                            "嗯嗯",
+                            "收到～",
+                            "好的呀",
+                            "哈哈懂了",
                         ]
                         chunks = [random.choice(low_energy_pool)]
                 except Exception:
@@ -474,9 +480,9 @@ class MessageViewSet(viewsets.ModelViewSet):
                 if chunks:
                     chunks[0] = self._maybe_continue_if_cutoff(chunks[0], combined_text)
 
-                # 随机发送 2~4 句（若不足则以现有为准；低能量时只发1句）
+                # 微信聊天风格：随机发送1~3句（模拟真人打字习惯）
                 if len(chunks) > 1:
-                    n = random.randint(2, min(4, len(chunks)))
+                    n = random.randint(1, min(3, len(chunks)))
                     send_chunks = chunks[:n]
                 else:
                     send_chunks = chunks
@@ -511,13 +517,39 @@ class MessageViewSet(viewsets.ModelViewSet):
                 except Exception:
                     pass
 
-                for text_part in send_chunks:
-                    # 模拟人类节奏：长度相关的短暂停顿
+                for idx, text_part in enumerate(send_chunks):
+                    # 微信聊天节奏：短句间更短停顿，模拟快速打字
                     try:
-                        pause = min(1.2, 0.15 + len(text_part) / 40.0)
-                        time.sleep(pause)
+                        if idx > 0:  # 第一条立即发送
+                            pause = min(0.8, 0.1 + len(text_part) / 50.0)
+                            time.sleep(pause)
                     except Exception:
                         pass
+
+                    # 检测【随手拍：描述】格式，转换为图片消息
+                    if '【随手拍：' in text_part and '】' in text_part:
+                        import re
+                        match = re.search(r'【随手拍：([^】]+)】', text_part)
+                        if match:
+                            desc = match.group(1)
+                            photo_url = self._random_life_scene_photo(desc)
+                            if photo_url:
+                                ai_img = Message.objects.create(session_id=session_id, content=photo_url, content_type='image', sender='ai')
+                                async_to_sync(channel_layer.group_send)(
+                                    f"chat_{session_id}",
+                                    {
+                                        'type': 'chat.message',
+                                        'message': {
+                                            'id': ai_img.id,
+                                            'content': photo_url,
+                                            'sender': 'ai',
+                                            'content_type': 'image',
+                                            'timestamp': ai_img.timestamp.isoformat(),
+                                            'text': f'随手拍的{desc}',
+                                        }
+                                    }
+                                )
+                                continue  # 跳过文字版本
 
                     ai_msg = Message.objects.create(session_id=session_id, content=text_part, content_type='text', sender='ai')
                     payload = {
@@ -592,6 +624,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         return False
 
     def _random_mira_photo(self) -> str:
+        """Mira的生活照"""
         photos = [
             'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop',
             'https://images.unsplash.com/photo-1521575107034-e0fa0b594529?q=80&w=800&auto=format&fit=crop',
@@ -603,5 +636,26 @@ class MessageViewSet(viewsets.ModelViewSet):
             return random.choice(photos)
         except Exception:
             return ''
+    
+    def _random_life_scene_photo(self, desc: str) -> str:
+        """根据描述返回对应的生活场景照片"""
+        scene_photos = {
+            '咖啡': 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=800&auto=format&fit=crop',
+            '猫': 'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?q=80&w=800&auto=format&fit=crop',
+            '夕阳': 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?q=80&w=800&auto=format&fit=crop',
+            '街景': 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?q=80&w=800&auto=format&fit=crop',
+            '美食': 'https://images.unsplash.com/photo-1565299624946-b28f40a0ca4b?q=80&w=800&auto=format&fit=crop',
+            '花': 'https://images.unsplash.com/photo-1490750967868-88aa4486c946?q=80&w=800&auto=format&fit=crop',
+            '天空': 'https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?q=80&w=800&auto=format&fit=crop',
+        }
+        
+        # 根据描述关键词匹配
+        desc_lower = desc.lower()
+        for keyword, url in scene_photos.items():
+            if keyword in desc_lower or keyword in desc:
+                return url
+        
+        # 默认返回街景
+        return scene_photos.get('街景', '')
 
 
