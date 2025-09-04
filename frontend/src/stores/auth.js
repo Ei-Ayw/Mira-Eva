@@ -9,9 +9,31 @@ export const useAuthStore = defineStore('auth', {
     lastAuthModalAt: 0,
   }),
   getters: {
-    isAuthenticated: (state) => !!state.token && state.token.startsWith('eyJ'),
+    isAuthenticated: (state) => {
+      // 检查token是否存在且格式正确
+      return !!state.token && state.token.startsWith('eyJ')
+    },
   },
   actions: {
+    // 初始化认证状态
+    initAuth() {
+      const token = localStorage.getItem('auth_token')
+      const user = localStorage.getItem('user')
+      
+      if (token && token.startsWith('eyJ') && user) {
+        try {
+          this.token = token
+          this.user = JSON.parse(user)
+          console.log('认证状态已恢复:', this.user?.username)
+        } catch (error) {
+          console.error('解析用户数据失败:', error)
+          this.clearAuth()
+        }
+      } else {
+        this.clearAuth()
+      }
+    },
+    
     setToken(token, user = null) {
       this.token = token || ''
       if (token) localStorage.setItem('auth_token', token)

@@ -24,6 +24,6 @@ app.use(Antd)
 // 挂载应用
 app.mount('#app')
 
-// 全局监听未授权事件（由 API 动态调用 store）
-// 这里确保 store 可被初始化
-useAuthStore()
+// 初始化认证状态
+const authStore = useAuthStore()
+authStore.initAuth()

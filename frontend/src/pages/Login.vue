@@ -54,12 +54,14 @@
 <script>
 import { ref } from 'vue'
 import { useAuth } from '@/composables/useAuth'
+import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 
 export default {
   name: 'Login',
   setup() {
     const { login } = useAuth()
+    const authStore = useAuthStore()
     const router = useRouter()
     
     const username = ref('')
@@ -80,8 +82,13 @@ export default {
         const result = await login(username.value, password.value)
         
         if (result.success) {
+          // 同步更新Pinia store
+          authStore.setToken(localStorage.getItem('auth_token'), result.user)
           console.log('登录成功，跳转到聊天页面')
-          router.push('/chat')
+          
+          // 检查是否有重定向路径
+          const redirect = router.currentRoute.value.query.redirect || '/chat'
+          router.push(redirect)
         } else {
           error.value = result.error || '登录失败'
         }
