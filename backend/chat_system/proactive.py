@@ -118,6 +118,19 @@ class ProactiveEngine:
     def send_proactive_message(self, user_id, message, message_type="proactive"):
         """发送主动消息到指定用户"""
         try:
+            # 安静时段（22:30-07:30）默认不主动触发
+            hour = timezone.now().hour
+            if hour >= 22 or hour < 7:
+                logger.info("安静时段，跳过主动触发")
+                return False
+
+            # 每日配额：每用户每日最多 6 条主动消息
+            quota_key = f"proactive_quota:{user_id}:{timezone.now().date().isoformat()}"
+            quota = cache.get(quota_key, 0)
+            if quota >= 6:
+                logger.info("主动消息达到今日配额，跳过")
+                return False
+
             # 在用户主动发言后60秒内暂停主动触发
             last_ts = cache.get(f"last_user_message_at:{user_id}")
             if last_ts:
@@ -176,6 +189,7 @@ class ProactiveEngine:
                 async_to_sync(self.channel_layer.group_send)(f"chat_{user_id}", payload)
             
             logger.info(f"主动消息发送成功: user_id={user_id}, type={message_type}")
+            cache.set(quota_key, quota + 1, timeout=24*3600)
             return True
             
         except Exception as e:

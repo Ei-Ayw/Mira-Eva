@@ -156,6 +156,14 @@ export function useWebSocket() {
     }
     return false
   }
+
+  const sendActivity = () => {
+    if (ws.value && isConnected.value) {
+      try {
+        ws.value.send(JSON.stringify({ type: 'activity', ts: Date.now() }))
+      } catch (e) {}
+    }
+  }
   
   const sendReadReceipt = (messageId) => {
     if (ws.value && isConnected.value) {
@@ -183,6 +191,7 @@ export function useWebSocket() {
     disconnect,
     sendMessage,
     sendTypingStatus,
+    sendActivity,
     sendReadReceipt,
     isConnected,
     messages,

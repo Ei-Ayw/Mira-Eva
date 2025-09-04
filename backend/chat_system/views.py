@@ -14,6 +14,7 @@ from ai_engine.xhs_crawler import fetch_xhs_examples, load_exemplars, save_exemp
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
+from django.db import close_old_connections
 import threading
 import time
 import random
@@ -405,6 +406,11 @@ class MessageViewSet(viewsets.ModelViewSet):
             pass
 
     def _debounced_reply_worker(self, session_id: int, user_id: int, debounce_s: float, max_wait_s: float):
+        # 确保线程内数据库连接正确管理，避免连接泄漏
+        try:
+            close_old_connections()
+        except Exception:
+            pass
         pending_key = f"debounce_pending:{session_id}"
         lock_key = f"debounce_lock:{session_id}"
         if not cache.add(lock_key, '1', timeout=int(max_wait_s) + 2):
@@ -447,12 +453,15 @@ class MessageViewSet(viewsets.ModelViewSet):
 
                 # 生成候选句子
                 chunks = self._ai_reply_chunks(combined_text, 'text') or ["我在呢，继续跟我说说～"]
-                # 低能量概率 10%
+                # 低能量概率：短输入（<=8字且非疑问）更高，默认10%
                 try:
-                    if random.random() < 0.10:
+                    txt = (combined_text or '').strip()
+                    is_short = len(txt) <= 8 and ('?' not in txt) and ('？' not in txt) and ('吗' not in txt)
+                    prob = 0.6 if is_short else 0.10
+                    if random.random() < prob:
                         low_energy_pool = [
                             "嗯嗯我在～",
-                            "哈哈，真是～",
+                            "哈哈真的",
                             "懂了，我听着呢。",
                             "行，我知道啦～",
                             "先记下了，继续说～",
@@ -465,9 +474,9 @@ class MessageViewSet(viewsets.ModelViewSet):
                 if chunks:
                     chunks[0] = self._maybe_continue_if_cutoff(chunks[0], combined_text)
 
-                # 随机发送 2~5 句（若不足则以现有为准；低能量时只发1句）
+                # 随机发送 2~4 句（若不足则以现有为准；低能量时只发1句）
                 if len(chunks) > 1:
-                    n = random.randint(2, min(5, len(chunks)))
+                    n = random.randint(2, min(4, len(chunks)))
                     send_chunks = chunks[:n]
                 else:
                     send_chunks = chunks
@@ -475,6 +484,32 @@ class MessageViewSet(viewsets.ModelViewSet):
                 channel_layer = get_channel_layer()
                 # 打字中开始
                 async_to_sync(channel_layer.group_send)(f"chat_{session_id}", { 'type': 'typing_status', 'is_typing': True, 'sender': 'ai' })
+
+                # 若命中“看你/生活照”等触发词，优先插入一张生活照
+                try:
+                    if self._should_send_profile_photo(session_id, combined_text):
+                        photo_url = self._random_mira_photo()
+                        if photo_url:
+                            ai_img = Message.objects.create(session_id=session_id, content=photo_url, content_type='image', sender='ai')
+                            async_to_sync(channel_layer.group_send)(
+                                f"chat_{session_id}",
+                                {
+                                    'type': 'chat.message',
+                                    'message': {
+                                        'id': ai_img.id,
+                                        'content': photo_url,
+                                        'sender': 'ai',
+                                        'content_type': 'image',
+                                        'timestamp': ai_img.timestamp.isoformat(),
+                                        'text': '今天的我来一张，好看吗？',
+                                    }
+                                }
+                            )
+                            now_ts = timezone.now().timestamp()
+                            cache.set(f"last_ai_message_at:{user_id}", now_ts, timeout=3600)
+                            cache.set(f"last_ai_message_at_session:{session_id}", now_ts, timeout=3600)
+                except Exception:
+                    pass
 
                 for text_part in send_chunks:
                     # 模拟人类节奏：长度相关的短暂停顿
@@ -532,6 +567,10 @@ class MessageViewSet(viewsets.ModelViewSet):
         finally:
             cache.delete(lock_key)
             cache.delete(pending_key)
+            try:
+                close_old_connections()
+            except Exception:
+                pass
 
     def _should_send_profile_photo(self, session_id: int, combined_text: str) -> bool:
         # 触发关键词 + 2分钟频控
@@ -541,6 +580,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         text = (combined_text or '')
         patterns = [
             r"看看你", r"你长什么样", r"发.*(照片|自拍)", r"生活照", r"想你", r"想看看", r"头像",
+            r"看看.*你", r"看下.*你", r"看一下.*你", r"看看.*照片", r"今天.*你.*(照片|样子)", r"(照片|自拍).*你",
         ]
         try:
             for p in patterns:

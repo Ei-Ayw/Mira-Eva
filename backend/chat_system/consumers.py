@@ -6,6 +6,7 @@ from channels.db import database_sync_to_async
 from django.contrib.auth.models import User
 from .models import ChatSession, Message
 from .proactive import proactive_engine
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if data.get('type') == 'chat_message':
             # 改为仅作为上行通道，不再在WS端保存与广播用户消息，避免与REST重复
             # 用户侧入库与AI回复由REST负责
+            return
+        if data.get('type') == 'activity':
+            # 记录用户活动心跳（用于主动引擎节流）
+            owner_id = self._owner_user_id or (self.user.id if getattr(self.user, 'is_authenticated', False) else None)
+            if owner_id:
+                cache.set(f"last_activity_at:{owner_id}", data.get('ts') or 0, timeout=3600)
             return
 
     async def chat_message(self, event):

@@ -204,7 +204,7 @@ export default {
   },
   setup() {
     const chatStore = useChatStore()
-    const { connect, /* sendMessage: sendWSMessage, */ isConnected, messages: wsMessages, sessionId, typing } = useWebSocket()
+    const { connect, /* sendMessage: sendWSMessage, */ isConnected, messages: wsMessages, sessionId, typing, sendActivity } = useWebSocket()
     const { startRecording, stopRecording, cancelRecording, isRecording, recordingTime } = useAudioRecorder()
     
     // 响应式数据
@@ -387,6 +387,8 @@ export default {
         textInput.value.style.height = 'auto'
         textInput.value.style.height = textInput.value.scrollHeight + 'px'
       }
+      // 用户在输入，发送活动心跳
+      try { sendActivity() } catch (_) {}
     }
     
     const scrollToBottom = () => {
@@ -428,7 +430,9 @@ export default {
     }, { deep: true })
 
     // 打字中状态（AI）
-    const isAiTyping = computed(() => !!(typing?.ai))
+    const isAiTyping = computed(() => {
+      try { return !!(typing && typing.value && typing.value.ai) } catch (_) { return false }
+    })
     
     const formatTime = (timestamp) => {
       const date = new Date(timestamp)
@@ -467,10 +471,20 @@ export default {
       
       // 滚动到底部
       scrollToBottom()
+      // 页面可见性变化 -> 活动心跳
+      const onVis = () => { try { sendActivity() } catch (_) {} }
+      document.addEventListener('visibilitychange', onVis)
+      window.addEventListener('focus', onVis)
+      window.__mira_onVis = onVis
     })
     
     onUnmounted(() => {
       // 清理资源
+      try {
+        document.removeEventListener('visibilitychange', window.__mira_onVis)
+        window.removeEventListener('focus', window.__mira_onVis)
+        delete window.__mira_onVis
+      } catch (_) {}
     })
     
     const shouldShowImageText = (text) => {
